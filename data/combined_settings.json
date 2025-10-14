@@ -1,0 +1,12 @@
+{
+  "confidence_threshold": 0.6,
+  "min_tool_agreement": 2,
+  "risk_reward_ratio": "1:2",
+  "tool_weights": {
+    "elliott": 1.0,
+    "fibonacci": 1.0,
+    "gann": 0.5,
+    "ichimoku": 1.0,
+    "wyckoff": 1.0
+  }
+}
