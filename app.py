@@ -2,9 +2,13 @@ import json
 import os
 from datetime import datetime, timezone
 from flask import Flask, render_template, request, session, jsonify
+from flask_apscheduler import APScheduler
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key_here'
+
+scheduler = APScheduler()
+scheduler.init_app(app)
 
 # Import analysis functions
 from fibonacci import run_fibonacci_analysis
@@ -22,6 +26,8 @@ ACTIVE_TRADES_FILE = os.path.join(DATA_DIR, 'active_trades.json')
 TRADE_HISTORY_FILE = os.path.join(DATA_DIR, 'trade_history.json')
 AUTO_REFRESH_FILE = os.path.join(DATA_DIR, 'auto_refresh_state.json')
 COMBINED_SETTINGS_FILE = os.path.join(DATA_DIR, 'combined_settings.json')
+ANALYSIS_CONFIG_FILE = os.path.join(DATA_DIR, 'analysis_config.json')
+RUNNING_TIME_FILE = os.path.join(DATA_DIR, 'running_time.json')
 
 def load_json_data(file_path, default_data):
     """Load JSON data from file, return default if file doesn't exist"""
@@ -87,6 +93,57 @@ def save_trade_data(active_trades, trade_history):
     success1 = save_json_data(ACTIVE_TRADES_FILE, active_trades)
     success2 = save_json_data(TRADE_HISTORY_FILE, trade_history)
     return success1 and success2
+
+def load_analysis_config():
+    """Load persistent analysis config"""
+    default_config = {
+        'selected_tools': ['fibonacci', 'elliott', 'ichimoku', 'wyckoff', 'gann'],
+        'symbols': ['BTCUSDT'],
+        'interval': '5m',
+        'candle_limit': 1000,
+        'fib_window': 60,
+        'fib_threshold': 0.003,
+        'elliott_thresholds': {'Minor': 0.005, 'Intermediate': 0.015, 'Major': 0.03},
+        'elliott_degrees': ['Minor', 'Intermediate', 'Major'],
+        'use_smoothing': False,
+        'smooth_period': 3,
+        'show_ema': False,
+        'show_bb': False,
+        'show_volume': False,
+        'show_rsi': False,
+        'show_macd': False,
+        'show_ema_ichimoku': False,
+        'show_bb_ichimoku': False,
+        'show_volume_ichimoku': False,
+        'show_rsi_ichimoku': False,
+        'show_macd_ichimoku': False,
+        'show_ema_wyckoff': False,
+        'show_bb_wyckoff': False,
+        'show_volume_wyckoff': False,
+        'show_rsi_wyckoff': False,
+        'show_macd_wyckoff': False,
+        'gann_subtools': ['Gann Fan', 'Gann Square', 'Gann Box', 'Gann Square Fixed'],
+        'pivot_choice': 'Auto (based on trend)',
+        'show_ema_gann': False,
+        'show_bb_gann': False,
+        'show_volume_gann': False,
+        'show_rsi_gann': False,
+        'show_macd_gann': False
+    }
+    return load_json_data(ANALYSIS_CONFIG_FILE, default_config)
+
+def save_analysis_config(config):
+    """Save persistent analysis config"""
+    return save_json_data(ANALYSIS_CONFIG_FILE, config)
+
+def load_running_time():
+    """Load running start time"""
+    default = {'start_time': None}
+    return load_json_data(RUNNING_TIME_FILE, default)
+
+def save_running_time(data):
+    """Save running start time"""
+    return save_json_data(RUNNING_TIME_FILE, data)
 
 # Initialize session data
 def init_session():
@@ -225,13 +282,13 @@ def normalize_analysis(analysis, tool):
         normalized.update(analysis)
     return normalized
 
-def run_analysis_for_tool(tool, symbols, interval, candle_limit, request_form):
-    """Run analysis for a specific tool and return results"""
+def run_analysis_for_tool(tool, symbols, interval, candle_limit, config):
+    """Run analysis for a specific tool and return results. Uses config dict instead of request_form."""
     analyses = {}
     
     if tool == 'fibonacci':
-        window = int(request_form.get('window', 60))
-        fib_threshold = float(request_form.get('fib_threshold', 0.3)) / 100
+        window = config.get('fib_window', 60)
+        fib_threshold = config.get('fib_threshold', 0.003)
         
         for symbol in symbols:
             try:
@@ -243,21 +300,17 @@ def run_analysis_for_tool(tool, symbols, interval, candle_limit, request_form):
                 print(f"Error running Fibonacci analysis for {symbol}: {e}")
                 
     elif tool == 'elliott':
-        thresholds = {
-            'Minor': float(request_form.get('minor_threshold', 0.5)) / 100,
-            'Intermediate': float(request_form.get('intermediate_threshold', 1.5)) / 100,
-            'Major': float(request_form.get('major_threshold', 3.0)) / 100
-        }
+        thresholds = config.get('elliott_thresholds', {'Minor': 0.005, 'Intermediate': 0.015, 'Major': 0.03})
         
-        selected_degrees = request_form.getlist('elliott_degrees') or ['Minor', 'Intermediate', 'Major']
-        use_smoothing = 'use_smoothing' in request_form
-        smooth_period = int(request_form.get('smooth_period', 3))
+        selected_degrees = config.get('elliott_degrees', ['Minor', 'Intermediate', 'Major'])
+        use_smoothing = config.get('use_smoothing', False)
+        smooth_period = config.get('smooth_period', 3)
         
-        show_ema = 'show_ema' in request_form
-        show_bb = 'show_bb' in request_form
-        show_volume = 'show_volume' in request_form
-        show_rsi = 'show_rsi' in request_form
-        show_macd = 'show_macd' in request_form
+        show_ema = config.get('show_ema', False)
+        show_bb = config.get('show_bb', False)
+        show_volume = config.get('show_volume', False)
+        show_rsi = config.get('show_rsi', False)
+        show_macd = config.get('show_macd', False)
         
         for symbol in symbols:
             try:
@@ -272,11 +325,11 @@ def run_analysis_for_tool(tool, symbols, interval, candle_limit, request_form):
                 print(f"Error running Elliott analysis for {symbol}: {e}")
                 
     elif tool == 'ichimoku':
-        show_ema_ichimoku = 'show_ema_ichimoku' in request_form
-        show_bb_ichimoku = 'show_bb_ichimoku' in request_form
-        show_volume_ichimoku = 'show_volume_ichimoku' in request_form
-        show_rsi_ichimoku = 'show_rsi_ichimoku' in request_form
-        show_macd_ichimoku = 'show_macd_ichimoku' in request_form
+        show_ema_ichimoku = config.get('show_ema_ichimoku', False)
+        show_bb_ichimoku = config.get('show_bb_ichimoku', False)
+        show_volume_ichimoku = config.get('show_volume_ichimoku', False)
+        show_rsi_ichimoku = config.get('show_rsi_ichimoku', False)
+        show_macd_ichimoku = config.get('show_macd_ichimoku', False)
         
         for symbol in symbols:
             try:
@@ -292,11 +345,11 @@ def run_analysis_for_tool(tool, symbols, interval, candle_limit, request_form):
                 print(f"Error running Ichimoku analysis for {symbol}: {e}")
                 
     elif tool == 'wyckoff':
-        show_ema_wyckoff = 'show_ema_wyckoff' in request_form
-        show_bb_wyckoff = 'show_bb_wyckoff' in request_form
-        show_volume_wyckoff = 'show_volume_wyckoff' in request_form
-        show_rsi_wyckoff = 'show_rsi_wyckoff' in request_form
-        show_macd_wyckoff = 'show_macd_wyckoff' in request_form
+        show_ema_wyckoff = config.get('show_ema_wyckoff', False)
+        show_bb_wyckoff = config.get('show_bb_wyckoff', False)
+        show_volume_wyckoff = config.get('show_volume_wyckoff', False)
+        show_rsi_wyckoff = config.get('show_rsi_wyckoff', False)
+        show_macd_wyckoff = config.get('show_macd_wyckoff', False)
         
         for symbol in symbols:
             try:
@@ -312,16 +365,14 @@ def run_analysis_for_tool(tool, symbols, interval, candle_limit, request_form):
                 print(f"Error running Wyckoff analysis for {symbol}: {e}")
                 
     elif tool == 'gann':
-        gann_subtools = request_form.getlist('gann_subtools') 
-        if not gann_subtools:
-            gann_subtools = ['Gann Fan', 'Gann Square', 'Gann Box', 'Gann Square Fixed']
+        gann_subtools = config.get('gann_subtools', ['Gann Fan', 'Gann Square', 'Gann Box', 'Gann Square Fixed'])
         
-        pivot_choice = request_form.get('pivot_choice', 'Auto (based on trend)')
-        show_ema_gann = 'show_ema_gann' in request_form
-        show_bb_gann = 'show_bb_gann' in request_form
-        show_volume_gann = 'show_volume_gann' in request_form
-        show_rsi_gann = 'show_rsi_gann' in request_form
-        show_macd_gann = 'show_macd_gann' in request_form
+        pivot_choice = config.get('pivot_choice', 'Auto (based on trend)')
+        show_ema_gann = config.get('show_ema_gann', False)
+        show_bb_gann = config.get('show_bb_gann', False)
+        show_volume_gann = config.get('show_volume_gann', False)
+        show_rsi_gann = config.get('show_rsi_gann', False)
+        show_macd_gann = config.get('show_macd_gann', False)
         
         for symbol in symbols:
             try:
@@ -346,45 +397,38 @@ def manage_trades(tool, analyses, session_data, interval):
     trade_history = session_data['trade_history']
     
     for symbol, analysis in analyses.items():
-        # Determine trade key (different for Elliott due to degrees)
+        current_price = analysis['current_price']
         if tool == 'elliott':
-            # Elliott trades are managed per degree in the analysis loop
-            continue
-        else:
-            trade_key = symbol
-        
-        # Check if existing trade should be closed
-        if trade_key in active_trades[tool]:
-            trade = active_trades[tool][trade_key]
-            hit_sl = (trade['action'] == "BUY" and analysis['current_price'] <= trade['stop_loss']) or \
-                     (trade['action'] == "SELL" and analysis['current_price'] >= trade['stop_loss'])
-            hit_tp = (trade['action'] == "BUY" and analysis['current_price'] >= trade['take_profit']) or \
-                     (trade['action'] == "SELL" and analysis['current_price'] <= trade['take_profit'])
-            
-            if hit_sl or hit_tp:
-                outcome = 'win' if hit_tp else 'loss'
-                close_price = analysis['current_price']
-                profit_pct = ((close_price - trade['entry_price']) / trade['entry_price'] * 100) if trade['action'] == "BUY" else \
-                             ((trade['entry_price'] - close_price) / trade['entry_price'] * 100)
-                closed_trade = trade.copy()
-                closed_trade.update({
-                    'outcome': outcome,
-                    'close_price': close_price,
-                    'profit_pct': profit_pct,
-                    'close_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
-                    'interval': interval
-                })
-                trade_history[tool].append(closed_trade)
-                del active_trades[tool][trade_key]
-                print(f"{tool.capitalize()} trade closed for {symbol}: {outcome}")
-
-        # Check if new trade should be opened
-        if tool == 'elliott':
-            # Elliott wave trades are handled separately per degree
             for degree in analysis.get('wave_data_by_degree', {}).keys():
                 trade_key = f"{symbol}_{degree}"
                 wave_data = analysis['wave_data_by_degree'].get(degree, {})
                 
+                # Check if existing trade should be closed
+                if trade_key in active_trades[tool]:
+                    trade = active_trades[tool][trade_key]
+                    hit_sl = (trade['action'] == "BUY" and current_price <= trade['stop_loss']) or \
+                             (trade['action'] == "SELL" and current_price >= trade['stop_loss'])
+                    hit_tp = (trade['action'] == "BUY" and current_price >= trade['take_profit']) or \
+                             (trade['action'] == "SELL" and current_price <= trade['take_profit'])
+                    
+                    if hit_sl or hit_tp:
+                        outcome = 'win' if hit_tp else 'loss'
+                        close_price = current_price
+                        profit_pct = ((close_price - trade['entry_price']) / trade['entry_price'] * 100) if trade['action'] == "BUY" else \
+                                     ((trade['entry_price'] - close_price) / trade['entry_price'] * 100)
+                        closed_trade = trade.copy()
+                        closed_trade.update({
+                            'outcome': outcome,
+                            'close_price': close_price,
+                            'profit_pct': profit_pct,
+                            'close_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                            'interval': interval
+                        })
+                        trade_history[tool].append(closed_trade)
+                        del active_trades[tool][trade_key]
+                        print(f"{tool.capitalize()} trade closed for {symbol} ({degree}): {outcome}")
+
+                # Check if new trade should be opened
                 if trade_key not in active_trades[tool] and wave_data.get('signals'):
                     for signal in wave_data['signals']:
                         active_trade = {
@@ -402,47 +446,95 @@ def manage_trades(tool, analyses, session_data, interval):
                         print(f"Elliott trade opened for {symbol} ({degree}): {signal['type']}")
                         break
         else:
-            # Other tools
-            if trade_key not in active_trades[tool]:
-                if tool == 'fibonacci' and analysis.get('trade_action') is not None:
-                    active_trade = {
-                        'symbol': symbol,
-                        'action': analysis['trade_action'],
-                        'entry_price': analysis['entry_price'],
-                        'stop_loss': analysis['stop_loss'],
-                        'take_profit': analysis['take_profit'],
-                        'entry_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
-                        'signals': analysis.get('signals', []),
-                        'signal_descriptions': analysis.get('signal_descriptions', []),
-                        'confidence': analysis.get('confidence'),
+            trade_key = symbol
+        
+            # Check if existing trade should be closed
+            if trade_key in active_trades[tool]:
+                trade = active_trades[tool][trade_key]
+                hit_sl = (trade['action'] == "BUY" and current_price <= trade['stop_loss']) or \
+                         (trade['action'] == "SELL" and current_price >= trade['stop_loss'])
+                hit_tp = (trade['action'] == "BUY" and current_price >= trade['take_profit']) or \
+                         (trade['action'] == "SELL" and current_price <= trade['take_profit'])
+                
+                if hit_sl or hit_tp:
+                    outcome = 'win' if hit_tp else 'loss'
+                    close_price = current_price
+                    profit_pct = ((close_price - trade['entry_price']) / trade['entry_price'] * 100) if trade['action'] == "BUY" else \
+                                 ((trade['entry_price'] - close_price) / trade['entry_price'] * 100)
+                    closed_trade = trade.copy()
+                    closed_trade.update({
+                        'outcome': outcome,
+                        'close_price': close_price,
+                        'profit_pct': profit_pct,
+                        'close_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
                         'interval': interval
-                    }
-                    active_trades[tool][trade_key] = active_trade
-                    print(f"Fibonacci trade opened for {symbol}: {analysis['trade_action']}")
-                elif analysis.get('signals'):
-                    for signal in analysis['signals']:
-                        # Fix: Skip if signal is not a dict (e.g., if it's a string)
-                        if not isinstance(signal, dict):
-                            print(f"Warning: Skipping invalid signal format for {tool} on {symbol}: {signal}")
-                            continue
-                        # Fix: Use .get() to avoid KeyError if 'type' missing (fallback to 'action' or skip)
-                        action = signal.get('type') or signal.get('action')
-                        if not action:
-                            print(f"Warning: Skipping signal without 'type' or 'action' for {tool} on {symbol}")
-                            continue
+                    })
+                    trade_history[tool].append(closed_trade)
+                    del active_trades[tool][trade_key]
+                    print(f"{tool.capitalize()} trade closed for {symbol}: {outcome}")
+
+            # Check if new trade should be opened - ONLY FOR BUY/SELL ACTIONS
+            if trade_key not in active_trades[tool]:
+                trade_action = analysis.get('trade_action') or analysis.get('action')
+                
+                # For combined analysis, only create trades for BUY/SELL, not HOLD
+                if tool == 'combined':
+                    if trade_action in ['BUY', 'SELL']:
                         active_trade = {
                             'symbol': symbol,
-                            'action': action,
-                            'entry_price': signal.get('entry_price', analysis['current_price']),
-                            'stop_loss': signal.get('sl', signal.get('stop_loss')),
-                            'take_profit': signal.get('tp', signal.get('take_profit')),
+                            'action': trade_action,
+                            'entry_price': analysis.get('entry_price', current_price),
+                            'stop_loss': analysis.get('stop_loss'),
+                            'take_profit': analysis.get('take_profit'),
+                            'position_size': analysis.get('position_size'),
                             'entry_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
-                            'reason': signal.get('reason', 'No reason provided'),
+                            'confidence': analysis.get('confidence'),
+                            'agreement_level': analysis.get('agreement_level'),
                             'interval': interval
                         }
                         active_trades[tool][trade_key] = active_trade
-                        print(f"{tool.capitalize()} trade opened for {symbol}: {action}")
-                        break
+                        print(f"Combined trade opened for {symbol}: {trade_action} (Position: {analysis.get('position_size', 0)}%)")
+                else:
+                    # For other tools, use existing logic
+                    if trade_action is not None:
+                        active_trade = {
+                            'symbol': symbol,
+                            'action': trade_action,
+                            'entry_price': analysis.get('entry_price', current_price),
+                            'stop_loss': analysis.get('stop_loss'),
+                            'take_profit': analysis.get('take_profit'),
+                            'entry_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                            'signals': analysis.get('signals', []),
+                            'signal_descriptions': analysis.get('signal_descriptions', []),
+                            'confidence': analysis.get('confidence'),
+                            'interval': interval
+                        }
+                        active_trades[tool][trade_key] = active_trade
+                        print(f"{tool.capitalize()} trade opened for {symbol}: {trade_action}")
+                    elif analysis.get('signals'):
+                        for signal in analysis['signals']:
+                            # Fix: Skip if signal is not a dict (e.g., if it's a string)
+                            if not isinstance(signal, dict):
+                                print(f"Warning: Skipping invalid signal format for {tool} on {symbol}: {signal}")
+                                continue
+                            # Fix: Use .get() to avoid KeyError if 'type' missing (fallback to 'action' or skip)
+                            action = signal.get('type') or signal.get('action')
+                            if not action:
+                                print(f"Warning: Skipping signal without 'type' or 'action' for {tool} on {symbol}")
+                                continue
+                            active_trade = {
+                                'symbol': symbol,
+                                'action': action,
+                                'entry_price': signal.get('entry_price', current_price),
+                                'stop_loss': signal.get('sl', signal.get('stop_loss')),
+                                'take_profit': signal.get('tp', signal.get('take_profit')),
+                                'entry_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                                'reason': signal.get('reason', 'No reason provided'),
+                                'interval': interval
+                            }
+                            active_trades[tool][trade_key] = active_trade
+                            print(f"{tool.capitalize()} trade opened for {symbol}: {action}")
+                            break
 
 # Helper functions for combined analysis
 def convert_confidence_to_numeric(confidence_str):
@@ -741,8 +833,90 @@ def generate_combined_signal(tool_signals, current_price, symbol, interval, tool
             'sell_count': sell_count,
             'hold_count': hold_count,
             'agreement_percentage': agreement_percentage
-        }
+        },
+        'current_price': current_price  # Add for manage_trades
     }
+
+def run_scheduled_analysis():
+    auto_state = load_auto_refresh_state()
+    if not auto_state.get('enabled', False):
+        return
+
+    config = load_analysis_config()
+    combined_settings = load_combined_settings()
+    symbols = config['symbols']
+    interval = config['interval']
+    candle_limit = config['candle_limit']
+    selected_tools = config['selected_tools']
+
+    # Load persistent trade data
+    active_trades, trade_history = load_trade_data()
+    session_data = {'active_trades': active_trades, 'trade_history': trade_history}
+
+    tool_results = {}
+    
+    if 'fibonacci' in selected_tools:
+        fib_analyses = run_analysis_for_tool('fibonacci', symbols, interval, candle_limit, config)
+        manage_trades('fibonacci', fib_analyses, session_data, interval)
+        tool_results['fibonacci'] = fib_analyses
+    
+    if 'elliott' in selected_tools:
+        elliott_analyses = run_analysis_for_tool('elliott', symbols, interval, candle_limit, config)
+        manage_trades('elliott', elliott_analyses, session_data, interval)
+        tool_results['elliott'] = elliott_analyses
+    
+    if 'ichimoku' in selected_tools:
+        ichimoku_analyses = run_analysis_for_tool('ichimoku', symbols, interval, candle_limit, config)
+        manage_trades('ichimoku', ichimoku_analyses, session_data, interval)
+        tool_results['ichimoku'] = ichimoku_analyses
+    
+    if 'wyckoff' in selected_tools:
+        wyckoff_analyses = run_analysis_for_tool('wyckoff', symbols, interval, candle_limit, config)
+        manage_trades('wyckoff', wyckoff_analyses, session_data, interval)
+        tool_results['wyckoff'] = wyckoff_analyses
+    
+    if 'gann' in selected_tools:
+        gann_analyses = run_analysis_for_tool('gann', symbols, interval, candle_limit, config)
+        tool_results['gann'] = gann_analyses
+    
+    # Generate combined analysis (optional, if needed for trades)
+    combined_analyses = {}
+    for symbol in symbols:
+        symbol_tool_signals = {tool: data[symbol] for tool, data in tool_results.items() if symbol in data}
+        if symbol_tool_signals:
+            current_price = next(iter(symbol_tool_signals.values()))['current_price']
+            combined_signal = generate_combined_signal(
+                symbol_tool_signals, current_price, symbol, interval,
+                combined_settings['tool_weights'], combined_settings
+            )
+            combined_analyses[symbol] = combined_signal
+
+    # Manage combined trades
+    manage_trades('combined', combined_analyses, session_data, interval)
+
+    # Save updated trade data
+    save_trade_data(session_data['active_trades'], session_data['trade_history'])
+
+    # Update last analysis time
+    last_time = datetime.now(timezone.utc).isoformat()
+    auto_state['last_analysis_time'] = last_time
+    save_auto_refresh_state(auto_state)
+
+    print(f"Scheduled analysis completed at {last_time}")
+
+def get_running_days():
+    running_data = load_running_time()
+    start_time_str = running_data.get('start_time')
+    if not start_time_str:
+        return 0
+    start_time = datetime.fromisoformat(start_time_str)
+    elapsed = datetime.now(timezone.utc) - start_time
+    return elapsed.days
+
+@scheduler.task('interval', id='auto_analysis', minutes=5)  # Adjust interval as needed
+def scheduled_task():
+    run_scheduled_analysis()
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     init_session()
@@ -766,10 +940,18 @@ def index():
         # Update auto-refresh state if checkbox was submitted
         auto_refresh_enabled = 'auto_refresh' in request.form
         session['auto_refresh_enabled'] = auto_refresh_enabled
-        save_auto_refresh_state({
-            'enabled': auto_refresh_enabled,
-            'last_analysis_time': session.get('last_analysis_time')
-        })
+        auto_state = {'enabled': auto_refresh_enabled, 'last_analysis_time': session.get('last_analysis_time')}
+        save_auto_refresh_state(auto_state)
+        
+        # If enabling auto-refresh, set start time if not set
+        running_data = load_running_time()
+        if auto_refresh_enabled and not running_data.get('start_time'):
+            running_data['start_time'] = datetime.now(timezone.utc).isoformat()
+            save_running_time(running_data)
+        elif not auto_refresh_enabled:
+            # Optionally reset start_time when disabled
+            running_data['start_time'] = None
+            save_running_time(running_data)
         
         # Update combined settings
         if 'confidence_threshold' in request.form:
@@ -805,32 +987,73 @@ def index():
         
         candle_limit = int(request.form.get('candle_limit', 1000))
 
+        # Collect config from form
+        config = {
+            'selected_tools': selected_tools,
+            'symbols': symbols,
+            'interval': interval,
+            'candle_limit': candle_limit,
+            'fib_window': int(request.form.get('window', 60)),
+            'fib_threshold': float(request.form.get('fib_threshold', 0.3)) / 100,
+            'elliott_thresholds': {
+                'Minor': float(request.form.get('minor_threshold', 0.5)) / 100,
+                'Intermediate': float(request.form.get('intermediate_threshold', 1.5)) / 100,
+                'Major': float(request.form.get('major_threshold', 3.0)) / 100
+            },
+            'elliott_degrees': request.form.getlist('elliott_degrees') or ['Minor', 'Intermediate', 'Major'],
+            'use_smoothing': 'use_smoothing' in request.form,
+            'smooth_period': int(request.form.get('smooth_period', 3)),
+            'show_ema': 'show_ema' in request.form,
+            'show_bb': 'show_bb' in request.form,
+            'show_volume': 'show_volume' in request.form,
+            'show_rsi': 'show_rsi' in request.form,
+            'show_macd': 'show_macd' in request.form,
+            'show_ema_ichimoku': 'show_ema_ichimoku' in request.form,
+            'show_bb_ichimoku': 'show_bb_ichimoku' in request.form,
+            'show_volume_ichimoku': 'show_volume_ichimoku' in request.form,
+            'show_rsi_ichimoku': 'show_rsi_ichimoku' in request.form,
+            'show_macd_ichimoku': 'show_macd_ichimoku' in request.form,
+            'show_ema_wyckoff': 'show_ema_wyckoff' in request.form,
+            'show_bb_wyckoff': 'show_bb_wyckoff' in request.form,
+            'show_volume_wyckoff': 'show_volume_wyckoff' in request.form,
+            'show_rsi_wyckoff': 'show_rsi_wyckoff' in request.form,
+            'show_macd_wyckoff': 'show_macd_wyckoff' in request.form,
+            'gann_subtools': request.form.getlist('gann_subtools') or ['Gann Fan', 'Gann Square', 'Gann Box', 'Gann Square Fixed'],
+            'pivot_choice': request.form.get('pivot_choice', 'Auto (based on trend)'),
+            'show_ema_gann': 'show_ema_gann' in request.form,
+            'show_bb_gann': 'show_bb_gann' in request.form,
+            'show_volume_gann': 'show_volume_gann' in request.form,
+            'show_rsi_gann': 'show_rsi_gann' in request.form,
+            'show_macd_gann': 'show_macd_gann' in request.form
+        }
+        save_analysis_config(config)
+
         # Run analyses for all selected tools
         tool_results = {}
         
         if 'fibonacci' in selected_tools:
-            fibonacci_analyses_dict = run_analysis_for_tool('fibonacci', symbols, interval, candle_limit, request.form)
+            fibonacci_analyses_dict = run_analysis_for_tool('fibonacci', symbols, interval, candle_limit, config)
             fibonacci_analyses = list(fibonacci_analyses_dict.values())
             manage_trades('fibonacci', fibonacci_analyses_dict, session, interval)
             tool_results['fibonacci'] = fibonacci_analyses_dict
         
         if 'elliott' in selected_tools:
-            elliott_analyses = run_analysis_for_tool('elliott', symbols, interval, candle_limit, request.form)
+            elliott_analyses = run_analysis_for_tool('elliott', symbols, interval, candle_limit, config)
             manage_trades('elliott', elliott_analyses, session, interval)
             tool_results['elliott'] = elliott_analyses
         
         if 'ichimoku' in selected_tools:
-            ichimoku_analyses = run_analysis_for_tool('ichimoku', symbols, interval, candle_limit, request.form)
+            ichimoku_analyses = run_analysis_for_tool('ichimoku', symbols, interval, candle_limit, config)
             manage_trades('ichimoku', ichimoku_analyses, session, interval)
             tool_results['ichimoku'] = ichimoku_analyses
         
         if 'wyckoff' in selected_tools:
-            wyckoff_analyses = run_analysis_for_tool('wyckoff', symbols, interval, candle_limit, request.form)
+            wyckoff_analyses = run_analysis_for_tool('wyckoff', symbols, interval, candle_limit, config)
             manage_trades('wyckoff', wyckoff_analyses, session, interval)
             tool_results['wyckoff'] = wyckoff_analyses
         
         if 'gann' in selected_tools:
-            gann_analyses = run_analysis_for_tool('gann', symbols, interval, candle_limit, request.form)
+            gann_analyses = run_analysis_for_tool('gann', symbols, interval, candle_limit, config)
             tool_results['gann'] = gann_analyses
         
         # Generate combined analysis for each symbol
@@ -851,6 +1074,9 @@ def index():
                     combined_settings
                 )
                 combined_analyses[symbol] = combined_signal
+        
+        # Manage combined trades
+        manage_trades('combined', combined_analyses, session, interval)
         
         # Save trade data to JSON files
         save_trade_data(session['active_trades'], session['trade_history'])
@@ -885,6 +1111,9 @@ def index():
     combined_wins = sum(1 for t in trade_history.get('combined', []) if t.get('outcome') == 'win')
     combined_losses = len(trade_history.get('combined', [])) - combined_wins
 
+    # Get running days
+    running_days = get_running_days()
+
     return render_template('index.html', 
                          fibonacci_analyses=fibonacci_analyses,
                          elliott_analyses=elliott_analyses,
@@ -908,6 +1137,7 @@ def index():
                          intervals=intervals,
                          auto_refresh_enabled=auto_refresh_enabled,
                          combined_settings=combined_settings,
+                         running_days=running_days,
                          zip=zip)
 
 @app.route('/refresh_price/<symbol>')
@@ -969,6 +1199,10 @@ def auto_refresh_status():
         'last_analysis_time': auto_refresh_state.get('last_analysis_time')
     })
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+@app.route('/running_days')
+def running_days():
+    return jsonify({'running_days': get_running_days()})
 
+if __name__ == '__main__':
+    scheduler.start()
+    app.run(host='0.0.0.0', port=5000, debug=True)
