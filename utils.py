@@ -142,12 +142,22 @@ def detect_pivots(df, window=10):
     
     # Detect pivot highs
     for i in range(window, len(df) - window):
-        if all(df['high'].iloc[i] >= df['high'].iloc[i-window:i+window+1]):
+        # Get the current high value
+        current_high = df['high'].iloc[i]
+        # Get the window of highs to compare against
+        high_window = df['high'].iloc[i-window:i+window+1]
+        # Check if current high is the maximum in the window
+        if current_high >= high_window.max():
             df.loc[df.index[i], 'pivot_high'] = True
     
     # Detect pivot lows
     for i in range(window, len(df) - window):
-        if all(df['low'].iloc[i] <= df['low'].iloc[i-window:i+window+1]):
+        # Get the current low value
+        current_low = df['low'].iloc[i]
+        # Get the window of lows to compare against
+        low_window = df['low'].iloc[i-window:i+window+1]
+        # Check if current low is the minimum in the window
+        if current_low <= low_window.min():
             df.loc[df.index[i], 'pivot_low'] = True
     
     return df
@@ -226,5 +236,6 @@ def calculate_indicators(df, rsi_period=14, ema_period=20, atr_period=14, bb_per
     
 
     return df
+
 
 
