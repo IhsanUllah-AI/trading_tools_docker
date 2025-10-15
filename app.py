@@ -5,7 +5,7 @@ from flask import Flask, render_template, request, session, jsonify
 from flask_apscheduler import APScheduler
 
 app = Flask(__name__)
-app.secret_key = 'c74b83096eb1d42b804378494fe15bfc'
+app.secret_key = 'your_secret_key_here'
 
 scheduler = APScheduler()
 scheduler.init_app(app)
