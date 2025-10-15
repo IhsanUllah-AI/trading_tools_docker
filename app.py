@@ -1203,10 +1203,10 @@ def auto_refresh_status():
 def running_days():
     return jsonify({'running_days': get_running_days()})
 
-@app.before_serving
-def start_scheduler():
-    if not scheduler.running:
-        scheduler.start()
+if not scheduler.running:
+    scheduler.start()
+
+
 
 
 
