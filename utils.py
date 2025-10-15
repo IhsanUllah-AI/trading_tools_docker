@@ -77,14 +77,7 @@ def fetch_current_price(symbol="BTCUSDT"):
         return None
 
 def detect_hh_hl_lh_ll_columns(df, interval):
-    """Add HH, HL, LH, LL boolean columns to dataframe based on swing detection"""
-    if df is None or df.empty:
-    print("⚠️ Warning: Empty dataframe passed to detect_hh_hl_lh_ll_columns")
-    return df
-    if 'high' not in df.columns or 'low' not in df.columns or 'close' not in df.columns:
-    print(f"⚠️ Warning: Missing columns in DataFrame: {df.columns.tolist()}")
-    return df
-
+    """Add HH, HL, LH, LL boolean columns to dataframe based on swing detection""
     # Initialize columns
     df['hh'] = False
     df['hl'] = False
@@ -233,3 +226,4 @@ def calculate_indicators(df, rsi_period=14, ema_period=20, atr_period=14, bb_per
     
 
     return df
+
