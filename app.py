@@ -927,7 +927,7 @@ def get_running_days():
     elapsed = datetime.now(timezone.utc) - start_time
     return elapsed.days
 
-@scheduler.task('interval', id='auto_analysis', minutes=3)  # Adjust interval as needed
+@scheduler.task('interval', id='auto_analysis', minutes=5)  # Adjust interval as needed
 def scheduled_task():
     run_scheduled_analysis()
 
@@ -1219,6 +1219,7 @@ def running_days():
 
 if not scheduler.running:
     scheduler.start()
+
 
 
 
