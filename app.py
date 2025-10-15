@@ -1203,8 +1203,11 @@ def auto_refresh_status():
 def running_days():
     return jsonify({'running_days': get_running_days()})
 
-if __name__ == '__main__':
-    scheduler.start()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+@app.before_first_request
+def start_scheduler():
+    if not scheduler.running:
+        scheduler.start()
+
+
 
 
