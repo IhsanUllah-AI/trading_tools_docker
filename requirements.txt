@@ -85,6 +85,8 @@ zope.event==6.0
 zope.interface==8.0
 uuid
 flask==3.1.2
+flask-apscheduler==1.13.1
+
 
 
 
