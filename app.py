@@ -10,18 +10,32 @@ app.secret_key = 'your_secret_key_here'
 scheduler = APScheduler()
 scheduler.init_app(app)
 
-# Import analysis functions
-from fibonacci import run_fibonacci_analysis
-from elliott import run_elliott_analysis
-from ichimoku import run_ichimoku_analysis
-from wyckoff import run_wyckoff_analysis
-from gann import run_gann_analysis
+# In app.py, update these imports:
+try:
+    from .fibonacci import run_fibonacci_analysis
+    from .elliott import run_elliott_analysis
+    from .ichimoku import run_ichimoku_analysis
+    from .wyckoff import run_wyckoff_analysis
+    from .gann import run_gann_analysis
+except ImportError:
+    # Fallback for direct execution
+    from fibonacci import run_fibonacci_analysis
+    from elliott import run_elliott_analysis
+    from ichimoku import run_ichimoku_analysis
+    from wyckoff import run_wyckoff_analysis
+    from gann import run_gann_analysis
 
 # Data directory for JSON storage
 DATA_DIR = 'data'
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # JSON file paths
+import os
+
+# Update these paths to be absolute or relative to the app directory
+DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
+os.makedirs(DATA_DIR, exist_ok=True)
+
 ACTIVE_TRADES_FILE = os.path.join(DATA_DIR, 'active_trades.json')
 TRADE_HISTORY_FILE = os.path.join(DATA_DIR, 'trade_history.json')
 AUTO_REFRESH_FILE = os.path.join(DATA_DIR, 'auto_refresh_state.json')
@@ -1205,6 +1219,7 @@ def running_days():
 
 if not scheduler.running:
     scheduler.start()
+
 
 
 
