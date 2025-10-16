@@ -539,7 +539,7 @@
                         <label for="symbols">Coins:</label>
                         <select name="symbols" multiple style="width: 100%;">
                             {% for sym in popular_symbols %}
-                            <option value="{{ sym }}" {% if sym == "BTCUSDT" %}selected{% endif %}>{{ sym }}</option>
+                            <option value="{{ sym }}" {% if sym in config.symbols %}selected{% endif %}>{{ sym }}</option>
                             {% endfor %}
                         </select>
                     </div>
@@ -551,7 +551,7 @@
                             {% endfor %}
                         </select>
                         <label for="custom_symbols">Custom Symbols:</label>
-                        <input type="text" name="custom_symbols" value="" style="width: 100%;">
+                        <input type="text" name="custom_symbols" value="{{ config.get('custom_symbols', '') }}" style="width: 100%;">
                         <label for="candle_limit">Candles:</label>
                         <input type="number" name="candle_limit" value="1000" min="100" max="50000" step="100" style="width: 100%;">
                     </div>
