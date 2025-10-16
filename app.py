@@ -10,32 +10,18 @@ app.secret_key = 'your_secret_key_here'
 scheduler = APScheduler()
 scheduler.init_app(app)
 
-# In app.py, update these imports:
-try:
-    from .fibonacci import run_fibonacci_analysis
-    from .elliott import run_elliott_analysis
-    from .ichimoku import run_ichimoku_analysis
-    from .wyckoff import run_wyckoff_analysis
-    from .gann import run_gann_analysis
-except ImportError:
-    # Fallback for direct execution
-    from fibonacci import run_fibonacci_analysis
-    from elliott import run_elliott_analysis
-    from ichimoku import run_ichimoku_analysis
-    from wyckoff import run_wyckoff_analysis
-    from gann import run_gann_analysis
+# Import analysis functions
+from fibonacci import run_fibonacci_analysis
+from elliott import run_elliott_analysis
+from ichimoku import run_ichimoku_analysis
+from wyckoff import run_wyckoff_analysis
+from gann import run_gann_analysis
 
 # Data directory for JSON storage
 DATA_DIR = 'data'
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # JSON file paths
-import os
-
-# Update these paths to be absolute or relative to the app directory
-DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
-os.makedirs(DATA_DIR, exist_ok=True)
-
 ACTIVE_TRADES_FILE = os.path.join(DATA_DIR, 'active_trades.json')
 TRADE_HISTORY_FILE = os.path.join(DATA_DIR, 'trade_history.json')
 AUTO_REFRESH_FILE = os.path.join(DATA_DIR, 'auto_refresh_state.json')
@@ -856,13 +842,14 @@ def run_scheduled_analysis():
     if not auto_state.get('enabled', False):
         return
 
-    config = load_analysis_config()
+    config = load_analysis_config()  # This loads the saved configuration
     combined_settings = load_combined_settings()
-    symbols = config['symbols']
+    symbols = config['symbols']  # Use the saved symbols
     interval = config['interval']
     candle_limit = config['candle_limit']
     selected_tools = config['selected_tools']
 
+    # Rest of the function remains the same...
     # Load persistent trade data
     active_trades, trade_history = load_trade_data()
     session_data = {'active_trades': active_trades, 'trade_history': trade_history}
@@ -927,7 +914,7 @@ def get_running_days():
     elapsed = datetime.now(timezone.utc) - start_time
     return elapsed.days
 
-@scheduler.task('interval', id='auto_analysis', minutes=5)  # Adjust interval as needed
+@scheduler.task('interval', id='auto_analysis', minutes=2)  # Adjust interval as needed
 def scheduled_task():
     run_scheduled_analysis()
 
@@ -935,7 +922,7 @@ def scheduled_task():
 def index():
     init_session()
     
-    popular_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT", "SOLUSDT", "DOTUSDT", "DOGEUSDT", 
+    popular_symbols = ["BTCUSDT","BELUSDT", "YBUSDT","ETHUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT", "SOLUSDT", "DOTUSDT", "DOGEUSDT", 
                        "LTCUSDT", "LINKUSDT", "AVAXUSDT", "UNIUSDT", "ATOMUSDT"]
     intervals = ["1m", "3m", "5m", "15m", "1h", "2h", "3h", "4h", "1d"]
     
@@ -949,6 +936,12 @@ def index():
     # Handle auto-refresh state
     auto_refresh_enabled = session.get('auto_refresh_enabled', False)
     combined_settings = session.get('combined_settings', load_combined_settings())
+    
+    # Load the saved configuration to pre-populate form fields
+    saved_config = load_analysis_config()
+    
+    # Initialize config with saved values for GET requests
+    config = saved_config.copy()
     
     if request.method == 'POST':
         # Update auto-refresh state if checkbox was submitted
@@ -981,7 +974,7 @@ def index():
             session['combined_settings'] = combined_settings
             save_combined_settings(combined_settings)
         
-        # Get selected tools and unified settings
+        # Get selected tools and unified settings from the form
         selected_tools = request.form.getlist('tools') 
         if not selected_tools:
             selected_tools = ['fibonacci', 'elliott', 'ichimoku', 'wyckoff', 'gann']
@@ -1001,8 +994,8 @@ def index():
         
         candle_limit = int(request.form.get('candle_limit', 1000))
 
-        # Collect config from form
-        config = {
+        # Update config from form data
+        config.update({
             'selected_tools': selected_tools,
             'symbols': symbols,
             'interval': interval,
@@ -1039,7 +1032,7 @@ def index():
             'show_volume_gann': 'show_volume_gann' in request.form,
             'show_rsi_gann': 'show_rsi_gann' in request.form,
             'show_macd_gann': 'show_macd_gann' in request.form
-        }
+        })
         save_analysis_config(config)
 
         # Run analyses for all selected tools
@@ -1104,6 +1097,19 @@ def index():
         
         session.modified = True
     
+    # For GET requests or auto-refresh, use saved config to pre-populate form
+    else:
+        # Use the saved configuration for form pre-population
+        config = saved_config
+        symbols = config.get('symbols', ['BTCUSDT'])
+        selected_tools = config.get('selected_tools', ['fibonacci', 'elliott', 'ichimoku', 'wyckoff', 'gann'])
+        
+        # If auto-refresh is enabled and we have saved symbols, use them
+        if auto_refresh_enabled and symbols:
+            # You can optionally run analysis on auto-refresh GET requests too
+            # This ensures the page shows current data when loaded
+            pass
+    
     # Load trade data from JSON files (ensures consistency)
     active_trades, trade_history = load_trade_data()
     session['active_trades'] = active_trades
@@ -1152,6 +1158,7 @@ def index():
                          auto_refresh_enabled=auto_refresh_enabled,
                          combined_settings=combined_settings,
                          running_days=running_days,
+                         config=config,  # Pass the config to template
                          zip=zip)
 
 @app.route('/refresh_price/<symbol>')
@@ -1216,9 +1223,10 @@ def auto_refresh_status():
 @app.route('/running_days')
 def running_days():
     return jsonify({'running_days': get_running_days()})
-
+    
 if not scheduler.running:
     scheduler.start()
+
 
 
 
