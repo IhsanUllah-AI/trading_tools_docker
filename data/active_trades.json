@@ -1,0 +1,41 @@
+{
+  "combined": {},
+  "elliott": {},
+  "fibonacci": {
+    "BTCUSDT": {
+      "symbol": "BTCUSDT",
+      "action": "SELL",
+      "entry_price": 105126.99,
+      "stop_loss": 105597.2492857143,
+      "take_profit": 104186.47142857143,
+      "entry_time": "2025-10-17 14:42:53",
+      "signals": [
+        [
+          "Price Below EMA",
+          "SELL",
+          "orange",
+          0.15
+        ],
+        [
+          "Near resistance_50 Resistance",
+          "SELL",
+          "red",
+          0.4
+        ]
+      ],
+      "signal_descriptions": [
+        "Price below 20-period EMA: Bearish momentum, favoring sells.",
+        "Price near resistance_50 resistance with indicator confirmation: Strong sell signal."
+      ],
+      "confidence": 0.55,
+      "interval": "5m",
+      "position_size": 10.0,
+      "invested_amount": 500.0,
+      "entry_fee": 0.5,
+      "net_investment": 499.5
+    }
+  },
+  "gann": {},
+  "ichimoku": {},
+  "wyckoff": {}
+}
