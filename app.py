@@ -28,7 +28,94 @@ AUTO_REFRESH_FILE = os.path.join(DATA_DIR, 'auto_refresh_state.json')
 COMBINED_SETTINGS_FILE = os.path.join(DATA_DIR, 'combined_settings.json')
 ANALYSIS_CONFIG_FILE = os.path.join(DATA_DIR, 'analysis_config.json')
 RUNNING_TIME_FILE = os.path.join(DATA_DIR, 'running_time.json')
+BUDGET_FILE = os.path.join(DATA_DIR, 'budget.json')
+SIGNAL_FILTERS_FILE = os.path.join(DATA_DIR, 'signal_filters.json')
 
+def load_signal_filters():
+    """Load signal filter settings from file"""
+    default_filters = {
+        'buy_enabled': True,
+        'sell_enabled': True,
+        'apply_to_all_tools': True
+    }
+    return load_json_data(SIGNAL_FILTERS_FILE, default_filters)
+
+def save_signal_filters(filters):
+    """Save signal filter settings to file"""
+    return save_json_data(SIGNAL_FILTERS_FILE, filters)
+
+def is_signal_enabled(action, signal_filters):
+    """Check if a signal type is enabled based on filters"""
+    if not signal_filters:
+        return True
+    
+    action_upper = action.upper()
+    if action_upper == 'BUY':
+        return signal_filters.get('buy_enabled', True)
+    elif action_upper == 'SELL':
+        return signal_filters.get('sell_enabled', True)
+    return True
+
+# Add after imports
+FIXED_TRADE_AMOUNT = 500.0  # Fixed $500 per trade
+MAKER_FEE = 0.001  # 0.1% maker fee
+TAKER_FEE = 0.001  # 0.1% taker fee
+
+def calculate_trade_costs(investment_amount, is_opening=True):
+    """Calculate fees and net investment amount"""
+    fee_rate = TAKER_FEE if is_opening else MAKER_FEE
+    fee_amount = investment_amount * fee_rate
+    net_amount = investment_amount - fee_amount
+    return fee_amount, net_amount
+
+def load_budget():
+    """Load budget data from file"""
+    default_budget = {
+        'total_budget': 5000.0,
+        'used_budget': 0.0,
+        'remaining_budget': 5000.0,
+        'initial_budget': 5000.0,
+        'total_fees': 0.0,
+        'total_invested': 0.0
+    }
+    loaded_budget = load_json_data(BUDGET_FILE, default_budget)
+    
+    # Ensure all fields are present (backward compatibility)
+    for key in default_budget.keys():
+        if key not in loaded_budget:
+            loaded_budget[key] = default_budget[key]
+    
+    return loaded_budget
+
+def update_budget(investment_amount, fee_amount, action="use", gross_profit_usd=0.0):
+    """Update budget when trade is opened or closed"""
+    budget = load_budget()
+    
+    if action == "use":
+        budget['used_budget'] += investment_amount + fee_amount
+        budget['remaining_budget'] = budget['total_budget'] - budget['used_budget']
+        budget['total_fees'] += fee_amount
+        budget['total_invested'] += investment_amount
+    elif action == "return":  # When trade is closed
+        budget['used_budget'] -= investment_amount
+        budget['total_fees'] += fee_amount
+        budget['used_budget'] += fee_amount
+        budget['total_invested'] -= investment_amount
+        budget['total_budget'] += gross_profit_usd
+        budget['remaining_budget'] = budget['total_budget'] - budget['used_budget']
+    
+    save_budget(budget)
+    return True
+
+def save_budget(budget_data):
+    """Save budget data to file"""
+    return save_json_data(BUDGET_FILE, budget_data)
+
+def can_open_trade():
+    """Check if there's enough budget to open a new $500 trade"""
+    budget = load_budget()
+    total_cost = FIXED_TRADE_AMOUNT + (FIXED_TRADE_AMOUNT * TAKER_FEE)
+    return budget['remaining_budget'] >= total_cost, total_cost, FIXED_TRADE_AMOUNT
 def load_json_data(file_path, default_data):
     """Load JSON data from file, return default if file doesn't exist"""
     try:
@@ -167,6 +254,16 @@ def init_session():
     combined_settings = load_combined_settings()
     if 'combined_settings' not in session:
         session['combined_settings'] = combined_settings
+    
+    # Load signal filters - ensure this always exists
+    signal_filters = load_signal_filters()
+    if 'signal_filters' not in session:
+        session['signal_filters'] = signal_filters
+    
+    # Load and initialize budget
+    budget = load_budget()
+    session['budget'] = budget
+
 
 # Normalize analysis output to ensure required keys
 def normalize_analysis(analysis, tool):
@@ -392,18 +489,21 @@ def run_analysis_for_tool(tool, symbols, interval, candle_limit, config):
     return analyses
 
 def manage_trades(tool, analyses, session_data, interval):
-    """Manage active trades and trade history for a specific tool"""
+    """Manage active trades and trade history for a specific tool with fixed $500 trade size"""
     active_trades = session_data['active_trades']
     trade_history = session_data['trade_history']
+    budget = load_budget()
+    signal_filters = session_data.get('signal_filters', load_signal_filters())
     
     for symbol, analysis in analyses.items():
         current_price = analysis['current_price']
+        
         if tool == 'elliott':
             for degree in analysis.get('wave_data_by_degree', {}).keys():
                 trade_key = f"{symbol}_{degree}"
                 wave_data = analysis['wave_data_by_degree'].get(degree, {})
                 
-                # Check if existing trade should be closed
+                # Check if existing trade should be closed (existing code remains the same)
                 if trade_key in active_trades[tool]:
                     trade = active_trades[tool][trade_key]
                     hit_sl = (trade['action'] == "BUY" and current_price <= trade['stop_loss']) or \
@@ -412,43 +512,83 @@ def manage_trades(tool, analyses, session_data, interval):
                              (trade['action'] == "SELL" and current_price <= trade['take_profit'])
                     
                     if hit_sl or hit_tp:
-                        outcome = 'win' if hit_tp else 'loss'
-                        close_price = current_price
-                        profit_pct = ((close_price - trade['entry_price']) / trade['entry_price'] * 100) if trade['action'] == "BUY" else \
-                                     ((trade['entry_price'] - close_price) / trade['entry_price'] * 100)
+                        # Calculate closing fee and net proceeds
+                        closing_fee, net_proceeds = calculate_trade_costs(trade['invested_amount'], is_opening=False)
+                        
+                        # Calculate profit/loss including fees
+                        if trade['action'] == "BUY":
+                            gross_profit = (current_price - trade['entry_price']) / trade['entry_price'] * 100
+                            gross_profit_usd = (current_price - trade['entry_price']) * (trade['net_investment'] / trade['entry_price'])
+                            net_profit_usd = gross_profit_usd - trade['entry_fee'] - closing_fee
+                        else:  # SELL
+                            gross_profit = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
+                            gross_profit_usd = (trade['entry_price'] - current_price) * (trade['net_investment'] / trade['entry_price'])
+                            net_profit_usd = gross_profit_usd - trade['entry_fee'] - closing_fee
+                        
+                        net_profit_percent = (net_profit_usd / trade['invested_amount']) * 100
+                        outcome = 'win' if net_profit_usd > 0 else 'loss'
+                        
                         closed_trade = trade.copy()
                         closed_trade.update({
                             'outcome': outcome,
-                            'close_price': close_price,
-                            'profit_pct': profit_pct,
+                            'close_price': current_price,
+                            'profit_pct': gross_profit,  # Gross profit percentage
+                            'net_profit_pct': net_profit_percent,  # Net profit percentage after fees
+                            'net_profit_usd': net_profit_usd,  # Net profit in USD
+                            'gross_profit_usd': gross_profit_usd,
+                            'closing_fee': closing_fee,
+                            'total_fees': trade['entry_fee'] + closing_fee,
                             'close_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
                             'interval': interval
                         })
                         trade_history[tool].append(closed_trade)
+                        
+                        # Return budget when trade closes (only the invested amount, fees are already deducted)
+                        update_budget(trade['invested_amount'], closing_fee, "return", gross_profit_usd=gross_profit_usd)
+                        
                         del active_trades[tool][trade_key]
-                        print(f"{tool.capitalize()} trade closed for {symbol} ({degree}): {outcome}")
+                        print(f"{tool.capitalize()} trade closed for {symbol} ({degree}): {outcome}, Net Profit: ${net_profit_usd:.2f}")
 
-                # Check if new trade should be opened
+                # Check if new trade should be opened - WITH SIGNAL FILTERING
                 if trade_key not in active_trades[tool] and wave_data.get('signals'):
                     for signal in wave_data['signals']:
-                        active_trade = {
-                            'symbol': symbol,
-                            'degree': degree,
-                            'action': signal['type'],
-                            'entry_price': signal['entry_price'],
-                            'stop_loss': signal['sl'],
-                            'take_profit': signal['tp'],
-                            'entry_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
-                            'reason': signal['reason'],
-                            'interval': interval
-                        }
-                        active_trades[tool][trade_key] = active_trade
-                        print(f"Elliott trade opened for {symbol} ({degree}): {signal['type']}")
+                        # Check if this signal type is enabled
+                        if not is_signal_enabled(signal['type'], signal_filters):
+                            print(f"Signal type {signal['type']} disabled for {tool} - skipping trade")
+                            continue
+                            
+                        can_trade, total_cost, investment_amount = can_open_trade()
+                        
+                        if can_trade:
+                            entry_fee, net_investment = calculate_trade_costs(investment_amount, is_opening=True)
+                            
+                            active_trade = {
+                                'symbol': symbol,
+                                'degree': degree,
+                                'action': signal['type'],
+                                'entry_price': signal['entry_price'],
+                                'stop_loss': signal['sl'],
+                                'take_profit': signal['tp'],
+                                'entry_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                                'reason': signal['reason'],
+                                'interval': interval,
+                                'position_size': 100 * (investment_amount / budget['total_budget']),  # Calculate percentage
+                                'invested_amount': investment_amount,
+                                'entry_fee': entry_fee,
+                                'net_investment': net_investment
+                            }
+                            active_trades[tool][trade_key] = active_trade
+                            
+                            # Use budget (investment amount + fee)
+                            update_budget(investment_amount, entry_fee, "use")
+                            print(f"Elliott trade opened for {symbol} ({degree}): {signal['type']}, Investment: ${investment_amount:.2f}, Fee: ${entry_fee:.2f}")
+                        else:
+                            print(f"Insufficient budget for Elliott trade on {symbol} ({degree}). Required: ${total_cost:.2f}, Available: ${budget['remaining_budget']:.2f}")
                         break
         else:
             trade_key = symbol
         
-            # Check if existing trade should be closed
+            # Check if existing trade should be closed (existing code remains the same)
             if trade_key in active_trades[tool]:
                 trade = active_trades[tool][trade_key]
                 hit_sl = (trade['action'] == "BUY" and current_price <= trade['stop_loss']) or \
@@ -457,85 +597,160 @@ def manage_trades(tool, analyses, session_data, interval):
                          (trade['action'] == "SELL" and current_price <= trade['take_profit'])
                 
                 if hit_sl or hit_tp:
-                    outcome = 'win' if hit_tp else 'loss'
-                    close_price = current_price
-                    profit_pct = ((close_price - trade['entry_price']) / trade['entry_price'] * 100) if trade['action'] == "BUY" else \
-                                 ((trade['entry_price'] - close_price) / trade['entry_price'] * 100)
+                    # Calculate closing fee and net proceeds
+                    closing_fee, net_proceeds = calculate_trade_costs(trade['invested_amount'], is_opening=False)
+                    
+                    # Calculate profit/loss including fees
+                    if trade['action'] == "BUY":
+                        gross_profit = (current_price - trade['entry_price']) / trade['entry_price'] * 100
+                        gross_profit_usd = (current_price - trade['entry_price']) * (trade['net_investment'] / trade['entry_price'])
+                        net_profit_usd = gross_profit_usd - trade['entry_fee'] - closing_fee
+                    else:  # SELL
+                        gross_profit = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
+                        gross_profit_usd = (trade['entry_price'] - current_price) * (trade['net_investment'] / trade['entry_price'])
+                        net_profit_usd = gross_profit_usd - trade['entry_fee'] - closing_fee
+                    
+                    net_profit_percent = (net_profit_usd / trade['invested_amount']) * 100
+                    outcome = 'win' if net_profit_usd > 0 else 'loss'
+                    
                     closed_trade = trade.copy()
                     closed_trade.update({
                         'outcome': outcome,
-                        'close_price': close_price,
-                        'profit_pct': profit_pct,
+                        'close_price': current_price,
+                        'profit_pct': gross_profit,  # Gross profit percentage
+                        'net_profit_pct': net_profit_percent,  # Net profit percentage after fees
+                        'net_profit_usd': net_profit_usd,  # Net profit in USD
+                        'gross_profit_usd': gross_profit_usd,
+                        'closing_fee': closing_fee,
+                        'total_fees': trade['entry_fee'] + closing_fee,
                         'close_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
                         'interval': interval
                     })
                     trade_history[tool].append(closed_trade)
+                    
+                    # Return budget when trade closes
+                    update_budget(trade['invested_amount'], closing_fee, "return", gross_profit_usd=gross_profit_usd)
+                    
                     del active_trades[tool][trade_key]
-                    print(f"{tool.capitalize()} trade closed for {symbol}: {outcome}")
+                    print(f"{tool.capitalize()} trade closed for {symbol}: {outcome}, Net Profit: ${net_profit_usd:.2f}")
 
-            # Check if new trade should be opened - ONLY FOR BUY/SELL ACTIONS
+            # Check if new trade should be opened - WITH SIGNAL FILTERING
             if trade_key not in active_trades[tool]:
                 trade_action = analysis.get('trade_action') or analysis.get('action')
                 
                 # For combined analysis, only create trades for BUY/SELL, not HOLD
                 if tool == 'combined':
                     if trade_action in ['BUY', 'SELL']:
-                        active_trade = {
-                            'symbol': symbol,
-                            'action': trade_action,
-                            'entry_price': analysis.get('entry_price', current_price),
-                            'stop_loss': analysis.get('stop_loss'),
-                            'take_profit': analysis.get('take_profit'),
-                            'position_size': analysis.get('position_size'),
-                            'entry_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
-                            'confidence': analysis.get('confidence'),
-                            'agreement_level': analysis.get('agreement_level'),
-                            'interval': interval
-                        }
-                        active_trades[tool][trade_key] = active_trade
-                        print(f"Combined trade opened for {symbol}: {trade_action} (Position: {analysis.get('position_size', 0)}%)")
-                else:
-                    # For other tools, use existing logic
-                    if trade_action is not None:
-                        active_trade = {
-                            'symbol': symbol,
-                            'action': trade_action,
-                            'entry_price': analysis.get('entry_price', current_price),
-                            'stop_loss': analysis.get('stop_loss'),
-                            'take_profit': analysis.get('take_profit'),
-                            'entry_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
-                            'signals': analysis.get('signals', []),
-                            'signal_descriptions': analysis.get('signal_descriptions', []),
-                            'confidence': analysis.get('confidence'),
-                            'interval': interval
-                        }
-                        active_trades[tool][trade_key] = active_trade
-                        print(f"{tool.capitalize()} trade opened for {symbol}: {trade_action}")
-                    elif analysis.get('signals'):
-                        for signal in analysis['signals']:
-                            # Fix: Skip if signal is not a dict (e.g., if it's a string)
-                            if not isinstance(signal, dict):
-                                print(f"Warning: Skipping invalid signal format for {tool} on {symbol}: {signal}")
-                                continue
-                            # Fix: Use .get() to avoid KeyError if 'type' missing (fallback to 'action' or skip)
-                            action = signal.get('type') or signal.get('action')
-                            if not action:
-                                print(f"Warning: Skipping signal without 'type' or 'action' for {tool} on {symbol}")
-                                continue
+                        # Check if this signal type is enabled
+                        if not is_signal_enabled(trade_action, signal_filters):
+                            print(f"Signal type {trade_action} disabled for {tool} - skipping trade")
+                            continue
+                            
+                        can_trade, total_cost, investment_amount = can_open_trade()
+                        
+                        if can_trade:
+                            entry_fee, net_investment = calculate_trade_costs(investment_amount, is_opening=True)
+                            
                             active_trade = {
                                 'symbol': symbol,
-                                'action': action,
-                                'entry_price': signal.get('entry_price', current_price),
-                                'stop_loss': signal.get('sl', signal.get('stop_loss')),
-                                'take_profit': signal.get('tp', signal.get('take_profit')),
+                                'action': trade_action,
+                                'entry_price': analysis.get('entry_price', current_price),
+                                'stop_loss': analysis.get('stop_loss'),
+                                'take_profit': analysis.get('take_profit'),
+                                'position_size': 100 * (investment_amount / budget['total_budget']),
                                 'entry_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
-                                'reason': signal.get('reason', 'No reason provided'),
-                                'interval': interval
+                                'confidence': analysis.get('confidence'),
+                                'agreement_level': analysis.get('agreement_level'),
+                                'interval': interval,
+                                'invested_amount': investment_amount,
+                                'entry_fee': entry_fee,
+                                'net_investment': net_investment
                             }
                             active_trades[tool][trade_key] = active_trade
-                            print(f"{tool.capitalize()} trade opened for {symbol}: {action}")
-                            break
-
+                            
+                            # Use budget
+                            update_budget(investment_amount, entry_fee, "use")
+                            print(f"Combined trade opened for {symbol}: {trade_action}, Investment: ${investment_amount:.2f}, Fee: ${entry_fee:.2f}")
+                        else:
+                            print(f"Insufficient budget for combined trade on {symbol}. Required: ${total_cost:.2f}, Available: ${budget['remaining_budget']:.2f}")
+                else:
+                    # For other tools, use fixed $500 trade size
+                    if trade_action in ['BUY', 'SELL']:
+                        # Check if this signal type is enabled
+                        if not is_signal_enabled(trade_action, signal_filters):
+                            print(f"Signal type {trade_action} disabled for {tool} - skipping trade")
+                            continue
+                            
+                        can_trade, total_cost, investment_amount = can_open_trade()
+                        
+                        if can_trade:
+                            entry_fee, net_investment = calculate_trade_costs(investment_amount, is_opening=True)
+                            
+                            active_trade = {
+                                'symbol': symbol,
+                                'action': trade_action,
+                                'entry_price': analysis.get('entry_price', current_price),
+                                'stop_loss': analysis.get('stop_loss'),
+                                'take_profit': analysis.get('take_profit'),
+                                'entry_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                                'signals': analysis.get('signals', []),
+                                'signal_descriptions': analysis.get('signal_descriptions', []),
+                                'confidence': analysis.get('confidence'),
+                                'interval': interval,
+                                'position_size': 100 * (investment_amount / budget['total_budget']),
+                                'invested_amount': investment_amount,
+                                'entry_fee': entry_fee,
+                                'net_investment': net_investment
+                            }
+                            active_trades[tool][trade_key] = active_trade
+                            
+                            # Use budget
+                            update_budget(investment_amount, entry_fee, "use")
+                            print(f"{tool.capitalize()} trade opened for {symbol}: {trade_action}, Investment: ${investment_amount:.2f}, Fee: ${entry_fee:.2f}")
+                        else:
+                            print(f"Insufficient budget for {tool} trade on {symbol}. Required: ${total_cost:.2f}, Available: ${budget['remaining_budget']:.2f}")
+                    elif analysis.get('signals'):
+                        for signal in analysis['signals']:
+                            if not isinstance(signal, dict):
+                                continue
+                            
+                            action = signal.get('type') or signal.get('action')
+                            if not action or action not in ['BUY', 'SELL']:
+                                continue
+                            
+                            # Check if this signal type is enabled
+                            if not is_signal_enabled(action, signal_filters):
+                                print(f"Signal type {action} disabled for {tool} - skipping trade")
+                                continue
+                                
+                            can_trade, total_cost, investment_amount = can_open_trade()
+                            
+                            if can_trade:
+                                entry_fee, net_investment = calculate_trade_costs(investment_amount, is_opening=True)
+                                
+                                active_trade = {
+                                    'symbol': symbol,
+                                    'action': action,
+                                    'entry_price': signal.get('entry_price', current_price),
+                                    'stop_loss': signal.get('sl', signal.get('stop_loss')),
+                                    'take_profit': signal.get('tp', signal.get('take_profit')),
+                                    'entry_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                                    'reason': signal.get('reason', 'No reason provided'),
+                                    'interval': interval,
+                                    'position_size': 100 * (investment_amount / budget['total_budget']),
+                                    'invested_amount': investment_amount,
+                                    'entry_fee': entry_fee,
+                                    'net_investment': net_investment
+                                }
+                                active_trades[tool][trade_key] = active_trade
+                                
+                                # Use budget
+                                update_budget(investment_amount, entry_fee, "use")
+                                print(f"{tool.capitalize()} trade opened for {symbol}: {action}, Investment: ${investment_amount:.2f}, Fee: ${entry_fee:.2f}")
+                                break
+                            else:
+                                print(f"Insufficient budget for {tool} trade on {symbol}. Required: ${total_cost:.2f}, Available: ${budget['remaining_budget']:.2f}")
+                                break
 # Helper functions for combined analysis
 def convert_confidence_to_numeric(confidence_str):
     """Convert confidence string to numeric value"""
@@ -937,13 +1152,32 @@ def index():
     auto_refresh_enabled = session.get('auto_refresh_enabled', False)
     combined_settings = session.get('combined_settings', load_combined_settings())
     
+    # Load signal filters - ensure this is always available
+    signal_filters = session.get('signal_filters')
+    if signal_filters is None:
+        signal_filters = load_signal_filters()
+        session['signal_filters'] = signal_filters
+    
     # Load the saved configuration to pre-populate form fields
     saved_config = load_analysis_config()
     
     # Initialize config with saved values for GET requests
     config = saved_config.copy()
     
+    # Load budget data
+    budget = load_budget()
+    
     if request.method == 'POST':
+        # Update signal filters if submitted
+        if 'buy_enabled' in request.form or 'sell_enabled' in request.form:
+            signal_filters = {
+                'buy_enabled': 'buy_enabled' in request.form,
+                'sell_enabled': 'sell_enabled' in request.form,
+                'apply_to_all_tools': 'apply_to_all_tools' in request.form
+            }
+            session['signal_filters'] = signal_filters
+            save_signal_filters(signal_filters)
+        
         # Update auto-refresh state if checkbox was submitted
         auto_refresh_enabled = 'auto_refresh' in request.form
         session['auto_refresh_enabled'] = auto_refresh_enabled
@@ -1095,6 +1329,8 @@ def index():
             'last_analysis_time': session['last_analysis_time']
         })
         
+        # Reload budget after trades
+        budget = load_budget()
         session.modified = True
     
     # For GET requests or auto-refresh, use saved config to pre-populate form
@@ -1103,12 +1339,6 @@ def index():
         config = saved_config
         symbols = config.get('symbols', ['BTCUSDT'])
         selected_tools = config.get('selected_tools', ['fibonacci', 'elliott', 'ichimoku', 'wyckoff', 'gann'])
-        
-        # If auto-refresh is enabled and we have saved symbols, use them
-        if auto_refresh_enabled and symbols:
-            # You can optionally run analysis on auto-refresh GET requests too
-            # This ensures the page shows current data when loaded
-            pass
     
     # Load trade data from JSON files (ensures consistency)
     active_trades, trade_history = load_trade_data()
@@ -1157,9 +1387,30 @@ def index():
                          intervals=intervals,
                          auto_refresh_enabled=auto_refresh_enabled,
                          combined_settings=combined_settings,
+                         signal_filters=signal_filters,  # Make sure this is passed
                          running_days=running_days,
-                         config=config,  # Pass the config to template
+                         budget=budget,
+                         config=config,
                          zip=zip)
+
+@app.route('/update_signal_filters', methods=['POST'])
+def update_signal_filters_route():
+    """Update signal filter settings"""
+    try:
+        data = request.get_json()
+        signal_filters = {
+            'buy_enabled': data.get('buy_enabled', True),
+            'sell_enabled': data.get('sell_enabled', True),
+            'apply_to_all_tools': data.get('apply_to_all_tools', True)
+        }
+        
+        save_signal_filters(signal_filters)
+        session['signal_filters'] = signal_filters
+        
+        return jsonify({'status': 'success', 'signal_filters': signal_filters})
+    except Exception as e:
+        print(f"Error updating signal filters: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/refresh_price/<symbol>')
 def refresh_price(symbol):
@@ -1176,56 +1427,121 @@ def close_trade():
         data = request.get_json()
         tool = data['tool']
         symbol = data['symbol']
-        degree = data.get('degree')  # For Elliott Wave trades
+        degree = data.get('degree')
         trade_key = f"{symbol}_{degree}" if tool == 'elliott' else symbol
         
         if trade_key in session['active_trades'][tool]:
             trade = session['active_trades'][tool][trade_key]
             close_price = float(data['close_price'])
             outcome = data['outcome']
-            profit_pct = ((close_price - trade['entry_price']) / trade['entry_price'] * 100) if trade['action'] == "BUY" else \
-                         ((trade['entry_price'] - close_price) / trade['entry_price'] * 100)
+            
+            # Calculate fees and profit/loss
+            closing_fee, net_proceeds = calculate_trade_costs(trade['invested_amount'], is_opening=False)
+            
+            if trade['action'] == "BUY":
+                gross_profit = (close_price - trade['entry_price']) / trade['entry_price'] * 100
+                gross_profit_usd = (close_price - trade['entry_price']) * (trade['net_investment'] / trade['entry_price'])
+                net_profit_usd = gross_profit_usd - trade['entry_fee'] - closing_fee
+            else:  # SELL
+                gross_profit = (trade['entry_price'] - close_price) / trade['entry_price'] * 100
+                gross_profit_usd = (trade['entry_price'] - close_price) * (trade['net_investment'] / trade['entry_price'])
+                net_profit_usd = gross_profit_usd - trade['entry_fee'] - closing_fee
+            
+            net_profit_percent = (net_profit_usd / trade['invested_amount']) * 100
+            
             closed_trade = trade.copy()
             closed_trade.update({
                 'outcome': outcome,
                 'close_price': close_price,
-                'profit_pct': profit_pct,
+                'profit_pct': gross_profit,
+                'net_profit_pct': net_profit_percent,
+                'net_profit_usd': net_profit_usd,
+                'gross_profit_usd': gross_profit_usd,
+                'closing_fee': closing_fee,
+                'total_fees': trade['entry_fee'] + closing_fee,
                 'close_time': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
                 'interval': trade['interval']
             })
             session['trade_history'][tool].append(closed_trade)
+            
+            # Return budget when trade is closed manually
+            update_budget(trade['invested_amount'], closing_fee, "return", gross_profit_usd=gross_profit_usd)
+            
             del session['active_trades'][tool][trade_key]
             
             # Save to JSON files
             save_trade_data(session['active_trades'], session['trade_history'])
             session.modified = True
             
-            print(f"{tool.capitalize()} trade closed for {symbol}: {outcome}")
+            print(f"{tool.capitalize()} trade closed for {symbol}: {outcome}, Net Profit: ${net_profit_usd:.2f}")
             return jsonify({'status': 'success'})
         else:
             return jsonify({'status': 'error', 'message': 'Trade not found'}), 404
     except Exception as e:
         print(f"Error closing trade: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500    
+
+@app.route('/update_budget', methods=['POST'])
+def update_budget_route():
+    try:
+        data = request.get_json()
+        new_budget = float(data['total_budget'])
+        
+        budget = load_budget()
+        budget['total_budget'] = new_budget
+        budget['remaining_budget'] = new_budget - budget['used_budget']
+        budget['initial_budget'] = new_budget
+        
+        save_budget(budget)
+        session['budget'] = budget
+        
+        return jsonify({'status': 'success', 'budget': budget})
+    except Exception as e:
+        print(f"Error updating budget: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+    
+
+@app.route('/reset_budget', methods=['POST'])
+def reset_budget():
+    """Reset budget to initial state"""
+    try:
+        default_budget = {
+            'total_budget': 5000.0,
+            'used_budget': 0.0,
+            'remaining_budget': 5000.0,
+            'initial_budget': 5000.0,
+            'total_fees': 0.0,
+            'total_invested': 0.0
+        }
+        save_budget(default_budget)
+        session['budget'] = default_budget
+        return jsonify({'status': 'success', 'budget': default_budget})
+    except Exception as e:
+        print(f"Error resetting budget: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500 
 
 @app.route('/auto_refresh_status')
 def auto_refresh_status():
     """Check if auto-refresh should trigger new analysis"""
     auto_refresh_state = load_auto_refresh_state()
     should_refresh = auto_refresh_state.get('enabled', False)
+    budget = load_budget()
     
     return jsonify({
         'enabled': should_refresh,
         'should_refresh': should_refresh,
-        'last_analysis_time': auto_refresh_state.get('last_analysis_time')
+        'last_analysis_time': auto_refresh_state.get('last_analysis_time'),
+        'budget': budget  # Add budget to response
     })
 
 @app.route('/running_days')
 def running_days():
     return jsonify({'running_days': get_running_days()})
     
+    
 if not scheduler.running:
     scheduler.start()
+
 
 
 
