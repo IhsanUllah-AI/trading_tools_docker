@@ -1102,7 +1102,7 @@ def scheduled_task():
 def index():
     init_session()
     
-    popular_symbols = ["BTCUSDT","ZKCUSDT","PUNDIXUSDT","VOXELUSDT","LUNCUSDT","DEGOUSDT","BELUSDT", "YBUSDT","ETHUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT", "SOLUSDT", "DOTUSDT", "DOGEUSDT", 
+    popular_symbols = ["BTCUSDT","ZKCUSDT","PUNDIXUSDT","VOXELUSDT","DEGOUSDT","BELUSDT", "YBUSDT","ETHUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT", "SOLUSDT", "DOTUSDT", "DOGEUSDT", 
                        "LTCUSDT", "LINKUSDT", "AVAXUSDT", "UNIUSDT", "ATOMUSDT"]
     intervals = ["1m", "3m", "5m", "15m", "1h", "2h", "3h", "4h", "1d"]
     
@@ -1473,6 +1473,7 @@ def running_days():
     
 if not scheduler.running:
     scheduler.start()
+
 
 
 
