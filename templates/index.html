@@ -560,6 +560,11 @@
                     <input type="checkbox" id="auto_refresh" name="auto_refresh" {% if auto_refresh_enabled %}checked{% endif %}>
                     <label for="auto_refresh">Auto-Refresh (60s)</label>
                 </div>
+                <!-- New: Enable Buy/Sell Signals -->
+                <div class="checkbox-group">
+                    <label><input type="checkbox" name="enable_buy" {% if config.get('enable_buy', True) %}checked{% endif %}> Enable Buy Signals</label>
+                    <label><input type="checkbox" name="enable_sell" {% if config.get('enable_sell', True) %}checked{% endif %}> Enable Sell Signals</label>
+                </div>
             </div>
         </details>
 
@@ -602,55 +607,6 @@
                         <p>$<span id="total_fees_display">{{ "%.2f"|format(budget.get('total_fees', 0.0)) }}</span></p>
                     </div>
                 </div>
-            </div>
-        </details>
-        <!-- Replace the signal filter section with this more robust version -->
-        <details open>
-            <summary>🚦 Trade Signal Filters</summary>
-            <div class="form-section">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; width: 100%;">
-                    <div class="auto-refresh-container">
-                        <input type="checkbox" id="buy_enabled" name="buy_enabled" 
-                            {% if signal_filters is defined and signal_filters.buy_enabled %}checked{% elif signal_filters is not defined %}checked{% endif %}>
-                        <label for="buy_enabled">Enable BUY Signals</label>
-                    </div>
-                    <div class="auto-refresh-container">
-                        <input type="checkbox" id="sell_enabled" name="sell_enabled" 
-                            {% if signal_filters is defined and signal_filters.sell_enabled %}checked{% elif signal_filters is not defined %}checked{% endif %}>
-                        <label for="sell_enabled">Enable SELL Signals</label>
-                    </div>
-                </div>
-                <div class="auto-refresh-container">
-                    <input type="checkbox" id="apply_to_all_tools" name="apply_to_all_tools" 
-                        {% if signal_filters is defined and signal_filters.apply_to_all_tools %}checked{% elif signal_filters is not defined %}checked{% endif %}>
-                    <label for="apply_to_all_tools">Apply to All Analysis Tools</label>
-                </div>
-                
-                <!-- Signal Filter Status Display -->
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; width: 100%; margin-top: 0.6rem;">
-                    <div class="metric-card" style="border-left: 4px solid #06d6a0;">
-                        <h4>BUY Signals</h4>
-                        <p id="buy_status">
-                            {% if signal_filters is defined %}
-                                {{ "ENABLED" if signal_filters.buy_enabled else "DISABLED" }}
-                            {% else %}
-                                ENABLED
-                            {% endif %}
-                        </p>
-                    </div>
-                    <div class="metric-card" style="border-left: 4px solid #ef476f;">
-                        <h4>SELL Signals</h4>
-                        <p id="sell_status">
-                            {% if signal_filters is defined %}
-                                {{ "ENABLED" if signal_filters.sell_enabled else "DISABLED" }}
-                            {% else %}
-                                ENABLED
-                            {% endif %}
-                        </p>
-                    </div>
-                </div>
-                
-                <button type="button" onclick="updateSignalFilters()" style="margin-top: 0.5rem;">Update Signal Filters</button>
             </div>
         </details>
         <details>
@@ -2026,48 +1982,7 @@
             updateBudgetDisplay();
         });
 
-        // Add these JavaScript functions
-        function updateSignalFilters() {
-            const buyEnabled = document.getElementById('buy_enabled').checked;
-            const sellEnabled = document.getElementById('sell_enabled').checked;
-            const applyToAllTools = document.getElementById('apply_to_all_tools').checked;
-            
-            fetch('/update_signal_filters', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    buy_enabled: buyEnabled,
-                    sell_enabled: sellEnabled,
-                    apply_to_all_tools: applyToAllTools
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.status === 'success') {
-                    document.getElementById('buy_status').textContent = data.signal_filters.buy_enabled ? 'ENABLED' : 'DISABLED';
-                    document.getElementById('sell_status').textContent = data.signal_filters.sell_enabled ? 'ENABLED' : 'DISABLED';
-                    alert('Signal filters updated successfully!');
-                } else {
-                    alert('Error updating signal filters: ' + data.message);
-                }
-            })
-            .catch(error => {
-                console.error('Error updating signal filters:', error);
-                alert('Error updating signal filters');
-            });
-        }
 
-        // Update signal filter display on page load
-        function updateSignalFilterDisplay() {
-            // This will be updated when we add signal filters to the auto_refresh_status response
-        }
-
-        // Call this on page load
-        document.addEventListener('DOMContentLoaded', function() {
-            loadAutoRefreshState();
-            updateBudgetDisplay();
-            updateSignalFilterDisplay();
-        });
 
         function startAutoRefresh() {
             if (!document.getElementById('auto_refresh').checked) return;
