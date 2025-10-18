@@ -29,32 +29,6 @@ COMBINED_SETTINGS_FILE = os.path.join(DATA_DIR, 'combined_settings.json')
 ANALYSIS_CONFIG_FILE = os.path.join(DATA_DIR, 'analysis_config.json')
 RUNNING_TIME_FILE = os.path.join(DATA_DIR, 'running_time.json')
 BUDGET_FILE = os.path.join(DATA_DIR, 'budget.json')
-SIGNAL_FILTERS_FILE = os.path.join(DATA_DIR, 'signal_filters.json')
-
-def load_signal_filters():
-    """Load signal filter settings from file"""
-    default_filters = {
-        'buy_enabled': True,
-        'sell_enabled': True,
-        'apply_to_all_tools': True
-    }
-    return load_json_data(SIGNAL_FILTERS_FILE, default_filters)
-
-def save_signal_filters(filters):
-    """Save signal filter settings to file"""
-    return save_json_data(SIGNAL_FILTERS_FILE, filters)
-
-def is_signal_enabled(action, signal_filters):
-    """Check if a signal type is enabled based on filters"""
-    if not signal_filters:
-        return True
-    
-    action_upper = action.upper()
-    if action_upper == 'BUY':
-        return signal_filters.get('buy_enabled', True)
-    elif action_upper == 'SELL':
-        return signal_filters.get('sell_enabled', True)
-    return True
 
 # Add after imports
 FIXED_TRADE_AMOUNT = 500.0  # Fixed $500 per trade
@@ -116,6 +90,7 @@ def can_open_trade():
     budget = load_budget()
     total_cost = FIXED_TRADE_AMOUNT + (FIXED_TRADE_AMOUNT * TAKER_FEE)
     return budget['remaining_budget'] >= total_cost, total_cost, FIXED_TRADE_AMOUNT
+
 def load_json_data(file_path, default_data):
     """Load JSON data from file, return default if file doesn't exist"""
     try:
@@ -215,7 +190,9 @@ def load_analysis_config():
         'show_bb_gann': False,
         'show_volume_gann': False,
         'show_rsi_gann': False,
-        'show_macd_gann': False
+        'show_macd_gann': False,
+        'enable_buy': True,  # New: Enable buy signals
+        'enable_sell': True  # New: Enable sell signals
     }
     return load_json_data(ANALYSIS_CONFIG_FILE, default_config)
 
@@ -255,15 +232,9 @@ def init_session():
     if 'combined_settings' not in session:
         session['combined_settings'] = combined_settings
     
-    # Load signal filters - ensure this always exists
-    signal_filters = load_signal_filters()
-    if 'signal_filters' not in session:
-        session['signal_filters'] = signal_filters
-    
     # Load and initialize budget
     budget = load_budget()
     session['budget'] = budget
-
 
 # Normalize analysis output to ensure required keys
 def normalize_analysis(analysis, tool):
@@ -488,12 +459,11 @@ def run_analysis_for_tool(tool, symbols, interval, candle_limit, config):
     
     return analyses
 
-def manage_trades(tool, analyses, session_data, interval):
+def manage_trades(tool, analyses, session_data, interval, enable_buy=True, enable_sell=True):
     """Manage active trades and trade history for a specific tool with fixed $500 trade size"""
     active_trades = session_data['active_trades']
     trade_history = session_data['trade_history']
     budget = load_budget()
-    signal_filters = session_data.get('signal_filters', load_signal_filters())
     
     for symbol, analysis in analyses.items():
         current_price = analysis['current_price']
@@ -503,7 +473,7 @@ def manage_trades(tool, analyses, session_data, interval):
                 trade_key = f"{symbol}_{degree}"
                 wave_data = analysis['wave_data_by_degree'].get(degree, {})
                 
-                # Check if existing trade should be closed (existing code remains the same)
+                # Check if existing trade should be closed
                 if trade_key in active_trades[tool]:
                     trade = active_trades[tool][trade_key]
                     hit_sl = (trade['action'] == "BUY" and current_price <= trade['stop_loss']) or \
@@ -549,14 +519,13 @@ def manage_trades(tool, analyses, session_data, interval):
                         del active_trades[tool][trade_key]
                         print(f"{tool.capitalize()} trade closed for {symbol} ({degree}): {outcome}, Net Profit: ${net_profit_usd:.2f}")
 
-                # Check if new trade should be opened - WITH SIGNAL FILTERING
+                # Check if new trade should be opened
                 if trade_key not in active_trades[tool] and wave_data.get('signals'):
                     for signal in wave_data['signals']:
-                        # Check if this signal type is enabled
-                        if not is_signal_enabled(signal['type'], signal_filters):
-                            print(f"Signal type {signal['type']} disabled for {tool} - skipping trade")
+                        action = signal['type']
+                        if (action == 'BUY' and not enable_buy) or (action == 'SELL' and not enable_sell):
+                            print(f"Skipping {action} signal for {symbol} ({degree}) as it is disabled.")
                             continue
-                            
                         can_trade, total_cost, investment_amount = can_open_trade()
                         
                         if can_trade:
@@ -565,7 +534,7 @@ def manage_trades(tool, analyses, session_data, interval):
                             active_trade = {
                                 'symbol': symbol,
                                 'degree': degree,
-                                'action': signal['type'],
+                                'action': action,
                                 'entry_price': signal['entry_price'],
                                 'stop_loss': signal['sl'],
                                 'take_profit': signal['tp'],
@@ -581,14 +550,14 @@ def manage_trades(tool, analyses, session_data, interval):
                             
                             # Use budget (investment amount + fee)
                             update_budget(investment_amount, entry_fee, "use")
-                            print(f"Elliott trade opened for {symbol} ({degree}): {signal['type']}, Investment: ${investment_amount:.2f}, Fee: ${entry_fee:.2f}")
+                            print(f"Elliott trade opened for {symbol} ({degree}): {action}, Investment: ${investment_amount:.2f}, Fee: ${entry_fee:.2f}")
                         else:
                             print(f"Insufficient budget for Elliott trade on {symbol} ({degree}). Required: ${total_cost:.2f}, Available: ${budget['remaining_budget']:.2f}")
                         break
         else:
             trade_key = symbol
         
-            # Check if existing trade should be closed (existing code remains the same)
+            # Check if existing trade should be closed
             if trade_key in active_trades[tool]:
                 trade = active_trades[tool][trade_key]
                 hit_sl = (trade['action'] == "BUY" and current_price <= trade['stop_loss']) or \
@@ -634,18 +603,16 @@ def manage_trades(tool, analyses, session_data, interval):
                     del active_trades[tool][trade_key]
                     print(f"{tool.capitalize()} trade closed for {symbol}: {outcome}, Net Profit: ${net_profit_usd:.2f}")
 
-            # Check if new trade should be opened - WITH SIGNAL FILTERING
+            # Check if new trade should be opened - ONLY FOR BUY/SELL ACTIONS
             if trade_key not in active_trades[tool]:
                 trade_action = analysis.get('trade_action') or analysis.get('action')
                 
                 # For combined analysis, only create trades for BUY/SELL, not HOLD
                 if tool == 'combined':
                     if trade_action in ['BUY', 'SELL']:
-                        # Check if this signal type is enabled
-                        if not is_signal_enabled(trade_action, signal_filters):
-                            print(f"Signal type {trade_action} disabled for {tool} - skipping trade")
+                        if (trade_action == 'BUY' and not enable_buy) or (trade_action == 'SELL' and not enable_sell):
+                            print(f"Skipping {trade_action} signal for {symbol} (combined) as it is disabled.")
                             continue
-                            
                         can_trade, total_cost, investment_amount = can_open_trade()
                         
                         if can_trade:
@@ -676,11 +643,9 @@ def manage_trades(tool, analyses, session_data, interval):
                 else:
                     # For other tools, use fixed $500 trade size
                     if trade_action in ['BUY', 'SELL']:
-                        # Check if this signal type is enabled
-                        if not is_signal_enabled(trade_action, signal_filters):
-                            print(f"Signal type {trade_action} disabled for {tool} - skipping trade")
+                        if (trade_action == 'BUY' and not enable_buy) or (trade_action == 'SELL' and not enable_sell):
+                            print(f"Skipping {trade_action} signal for {symbol} ({tool}) as it is disabled.")
                             continue
-                            
                         can_trade, total_cost, investment_amount = can_open_trade()
                         
                         if can_trade:
@@ -717,10 +682,8 @@ def manage_trades(tool, analyses, session_data, interval):
                             action = signal.get('type') or signal.get('action')
                             if not action or action not in ['BUY', 'SELL']:
                                 continue
-                            
-                            # Check if this signal type is enabled
-                            if not is_signal_enabled(action, signal_filters):
-                                print(f"Signal type {action} disabled for {tool} - skipping trade")
+                            if (action == 'BUY' and not enable_buy) or (action == 'SELL' and not enable_sell):
+                                print(f"Skipping {action} signal for {symbol} ({tool}) as it is disabled.")
                                 continue
                                 
                             can_trade, total_cost, investment_amount = can_open_trade()
@@ -1063,6 +1026,8 @@ def run_scheduled_analysis():
     interval = config['interval']
     candle_limit = config['candle_limit']
     selected_tools = config['selected_tools']
+    enable_buy = config.get('enable_buy', True)
+    enable_sell = config.get('enable_sell', True)
 
     # Rest of the function remains the same...
     # Load persistent trade data
@@ -1073,22 +1038,22 @@ def run_scheduled_analysis():
     
     if 'fibonacci' in selected_tools:
         fib_analyses = run_analysis_for_tool('fibonacci', symbols, interval, candle_limit, config)
-        manage_trades('fibonacci', fib_analyses, session_data, interval)
+        manage_trades('fibonacci', fib_analyses, session_data, interval, enable_buy=enable_buy, enable_sell=enable_sell)
         tool_results['fibonacci'] = fib_analyses
     
     if 'elliott' in selected_tools:
         elliott_analyses = run_analysis_for_tool('elliott', symbols, interval, candle_limit, config)
-        manage_trades('elliott', elliott_analyses, session_data, interval)
+        manage_trades('elliott', elliott_analyses, session_data, interval, enable_buy=enable_buy, enable_sell=enable_sell)
         tool_results['elliott'] = elliott_analyses
     
     if 'ichimoku' in selected_tools:
         ichimoku_analyses = run_analysis_for_tool('ichimoku', symbols, interval, candle_limit, config)
-        manage_trades('ichimoku', ichimoku_analyses, session_data, interval)
+        manage_trades('ichimoku', ichimoku_analyses, session_data, interval, enable_buy=enable_buy, enable_sell=enable_sell)
         tool_results['ichimoku'] = ichimoku_analyses
     
     if 'wyckoff' in selected_tools:
         wyckoff_analyses = run_analysis_for_tool('wyckoff', symbols, interval, candle_limit, config)
-        manage_trades('wyckoff', wyckoff_analyses, session_data, interval)
+        manage_trades('wyckoff', wyckoff_analyses, session_data, interval, enable_buy=enable_buy, enable_sell=enable_sell)
         tool_results['wyckoff'] = wyckoff_analyses
     
     if 'gann' in selected_tools:
@@ -1108,7 +1073,7 @@ def run_scheduled_analysis():
             combined_analyses[symbol] = combined_signal
 
     # Manage combined trades
-    manage_trades('combined', combined_analyses, session_data, interval)
+    manage_trades('combined', combined_analyses, session_data, interval, enable_buy=enable_buy, enable_sell=enable_sell)
 
     # Save updated trade data
     save_trade_data(session_data['active_trades'], session_data['trade_history'])
@@ -1152,12 +1117,6 @@ def index():
     auto_refresh_enabled = session.get('auto_refresh_enabled', False)
     combined_settings = session.get('combined_settings', load_combined_settings())
     
-    # Load signal filters - ensure this is always available
-    signal_filters = session.get('signal_filters')
-    if signal_filters is None:
-        signal_filters = load_signal_filters()
-        session['signal_filters'] = signal_filters
-    
     # Load the saved configuration to pre-populate form fields
     saved_config = load_analysis_config()
     
@@ -1168,16 +1127,6 @@ def index():
     budget = load_budget()
     
     if request.method == 'POST':
-        # Update signal filters if submitted
-        if 'buy_enabled' in request.form or 'sell_enabled' in request.form:
-            signal_filters = {
-                'buy_enabled': 'buy_enabled' in request.form,
-                'sell_enabled': 'sell_enabled' in request.form,
-                'apply_to_all_tools': 'apply_to_all_tools' in request.form
-            }
-            session['signal_filters'] = signal_filters
-            save_signal_filters(signal_filters)
-        
         # Update auto-refresh state if checkbox was submitted
         auto_refresh_enabled = 'auto_refresh' in request.form
         session['auto_refresh_enabled'] = auto_refresh_enabled
@@ -1265,7 +1214,9 @@ def index():
             'show_bb_gann': 'show_bb_gann' in request.form,
             'show_volume_gann': 'show_volume_gann' in request.form,
             'show_rsi_gann': 'show_rsi_gann' in request.form,
-            'show_macd_gann': 'show_macd_gann' in request.form
+            'show_macd_gann': 'show_macd_gann' in request.form,
+            'enable_buy': 'enable_buy' in request.form,  # New
+            'enable_sell': 'enable_sell' in request.form  # New
         })
         save_analysis_config(config)
 
@@ -1275,22 +1226,22 @@ def index():
         if 'fibonacci' in selected_tools:
             fibonacci_analyses_dict = run_analysis_for_tool('fibonacci', symbols, interval, candle_limit, config)
             fibonacci_analyses = list(fibonacci_analyses_dict.values())
-            manage_trades('fibonacci', fibonacci_analyses_dict, session, interval)
+            manage_trades('fibonacci', fibonacci_analyses_dict, session, interval, enable_buy=config['enable_buy'], enable_sell=config['enable_sell'])
             tool_results['fibonacci'] = fibonacci_analyses_dict
         
         if 'elliott' in selected_tools:
             elliott_analyses = run_analysis_for_tool('elliott', symbols, interval, candle_limit, config)
-            manage_trades('elliott', elliott_analyses, session, interval)
+            manage_trades('elliott', elliott_analyses, session, interval, enable_buy=config['enable_buy'], enable_sell=config['enable_sell'])
             tool_results['elliott'] = elliott_analyses
         
         if 'ichimoku' in selected_tools:
             ichimoku_analyses = run_analysis_for_tool('ichimoku', symbols, interval, candle_limit, config)
-            manage_trades('ichimoku', ichimoku_analyses, session, interval)
+            manage_trades('ichimoku', ichimoku_analyses, session, interval, enable_buy=config['enable_buy'], enable_sell=config['enable_sell'])
             tool_results['ichimoku'] = ichimoku_analyses
         
         if 'wyckoff' in selected_tools:
             wyckoff_analyses = run_analysis_for_tool('wyckoff', symbols, interval, candle_limit, config)
-            manage_trades('wyckoff', wyckoff_analyses, session, interval)
+            manage_trades('wyckoff', wyckoff_analyses, session, interval, enable_buy=config['enable_buy'], enable_sell=config['enable_sell'])
             tool_results['wyckoff'] = wyckoff_analyses
         
         if 'gann' in selected_tools:
@@ -1317,7 +1268,7 @@ def index():
                 combined_analyses[symbol] = combined_signal
         
         # Manage combined trades
-        manage_trades('combined', combined_analyses, session, interval)
+        manage_trades('combined', combined_analyses, session, interval, enable_buy=config['enable_buy'], enable_sell=config['enable_sell'])
         
         # Save trade data to JSON files
         save_trade_data(session['active_trades'], session['trade_history'])
@@ -1387,30 +1338,10 @@ def index():
                          intervals=intervals,
                          auto_refresh_enabled=auto_refresh_enabled,
                          combined_settings=combined_settings,
-                         signal_filters=signal_filters,  # Make sure this is passed
                          running_days=running_days,
-                         budget=budget,
+                         budget=budget,  # Make sure budget is passed
                          config=config,
                          zip=zip)
-
-@app.route('/update_signal_filters', methods=['POST'])
-def update_signal_filters_route():
-    """Update signal filter settings"""
-    try:
-        data = request.get_json()
-        signal_filters = {
-            'buy_enabled': data.get('buy_enabled', True),
-            'sell_enabled': data.get('sell_enabled', True),
-            'apply_to_all_tools': data.get('apply_to_all_tools', True)
-        }
-        
-        save_signal_filters(signal_filters)
-        session['signal_filters'] = signal_filters
-        
-        return jsonify({'status': 'success', 'signal_filters': signal_filters})
-    except Exception as e:
-        print(f"Error updating signal filters: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/refresh_price/<symbol>')
 def refresh_price(symbol):
@@ -1539,8 +1470,10 @@ def running_days():
     return jsonify({'running_days': get_running_days()})
     
     
+    
 if not scheduler.running:
     scheduler.start()
+
 
 
 
