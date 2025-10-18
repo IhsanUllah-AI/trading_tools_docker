@@ -61,20 +61,21 @@ def load_budget():
     
     return loaded_budget
 
-def update_budget(investment_amount, fee_amount, action="use", gross_profit_usd=0.0):
+def update_budget(investment_amount, fee_amount, action="use", gross_profit_usd=0.0, net_investment=None):
     """Update budget when trade is opened or closed"""
     budget = load_budget()
     
     if action == "use":
-        budget['used_budget'] += investment_amount + fee_amount
+        net_amount = investment_amount - fee_amount
+        budget['used_budget'] += investment_amount
         budget['remaining_budget'] = budget['total_budget'] - budget['used_budget']
         budget['total_fees'] += fee_amount
-        budget['total_invested'] += investment_amount
+        budget['total_invested'] += net_amount
     elif action == "return":  # When trade is closed
-        budget['used_budget'] -= investment_amount
+        budget['used_budget'] -= net_investment
         budget['total_fees'] += fee_amount
         budget['used_budget'] += fee_amount
-        budget['total_invested'] -= investment_amount
+        budget['total_invested'] -= net_investment
         budget['total_budget'] += gross_profit_usd
         budget['remaining_budget'] = budget['total_budget'] - budget['used_budget']
     
@@ -88,7 +89,7 @@ def save_budget(budget_data):
 def can_open_trade():
     """Check if there's enough budget to open a new $500 trade"""
     budget = load_budget()
-    total_cost = FIXED_TRADE_AMOUNT + (FIXED_TRADE_AMOUNT * TAKER_FEE)
+    total_cost = FIXED_TRADE_AMOUNT
     return budget['remaining_budget'] >= total_cost, total_cost, FIXED_TRADE_AMOUNT
 
 def load_json_data(file_path, default_data):
@@ -482,8 +483,9 @@ def manage_trades(tool, analyses, session_data, interval, enable_buy=True, enabl
                              (trade['action'] == "SELL" and current_price <= trade['take_profit'])
                     
                     if hit_sl or hit_tp:
-                        # Calculate closing fee and net proceeds
-                        closing_fee, net_proceeds = calculate_trade_costs(trade['invested_amount'], is_opening=False)
+                        # Calculate closing size and fee
+                        closing_size_usd = (trade['net_investment'] / trade['entry_price']) * current_price
+                        closing_fee, _ = calculate_trade_costs(closing_size_usd, is_opening=False)
                         
                         # Calculate profit/loss including fees
                         if trade['action'] == "BUY":
@@ -514,7 +516,7 @@ def manage_trades(tool, analyses, session_data, interval, enable_buy=True, enabl
                         trade_history[tool].append(closed_trade)
                         
                         # Return budget when trade closes (only the invested amount, fees are already deducted)
-                        update_budget(trade['invested_amount'], closing_fee, "return", gross_profit_usd=gross_profit_usd)
+                        update_budget(trade['invested_amount'], closing_fee, "return", gross_profit_usd=gross_profit_usd, net_investment=trade['net_investment'])
                         
                         del active_trades[tool][trade_key]
                         print(f"{tool.capitalize()} trade closed for {symbol} ({degree}): {outcome}, Net Profit: ${net_profit_usd:.2f}")
@@ -566,8 +568,9 @@ def manage_trades(tool, analyses, session_data, interval, enable_buy=True, enabl
                          (trade['action'] == "SELL" and current_price <= trade['take_profit'])
                 
                 if hit_sl or hit_tp:
-                    # Calculate closing fee and net proceeds
-                    closing_fee, net_proceeds = calculate_trade_costs(trade['invested_amount'], is_opening=False)
+                    # Calculate closing size and fee
+                    closing_size_usd = (trade['net_investment'] / trade['entry_price']) * current_price
+                    closing_fee, _ = calculate_trade_costs(closing_size_usd, is_opening=False)
                     
                     # Calculate profit/loss including fees
                     if trade['action'] == "BUY":
@@ -598,7 +601,7 @@ def manage_trades(tool, analyses, session_data, interval, enable_buy=True, enabl
                     trade_history[tool].append(closed_trade)
                     
                     # Return budget when trade closes
-                    update_budget(trade['invested_amount'], closing_fee, "return", gross_profit_usd=gross_profit_usd)
+                    update_budget(trade['invested_amount'], closing_fee, "return", gross_profit_usd, net_investment=trade['net_investment'])
                     
                     del active_trades[tool][trade_key]
                     print(f"{tool.capitalize()} trade closed for {symbol}: {outcome}, Net Profit: ${net_profit_usd:.2f}")
@@ -1102,7 +1105,7 @@ def scheduled_task():
 def index():
     init_session()
     
-    popular_symbols = ["BTCUSDT","ZKCUSDT","PUNDIXUSDT","VOXELUSDT","DEGOUSDT","BELUSDT", "YBUSDT","ETHUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT", "SOLUSDT", "DOTUSDT", "DOGEUSDT", 
+    popular_symbols = ["BTCUSDT","ZKCUSDT","DEGOUSDT","BELUSDT", "YBUSDT","ETHUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT", "SOLUSDT", "DOTUSDT", "DOGEUSDT", 
                        "LTCUSDT", "LINKUSDT", "AVAXUSDT", "UNIUSDT", "ATOMUSDT"]
     intervals = ["1m", "3m", "5m", "15m", "1h", "2h", "3h", "4h", "1d"]
     
@@ -1366,9 +1369,11 @@ def close_trade():
             close_price = float(data['close_price'])
             outcome = data['outcome']
             
-            # Calculate fees and profit/loss
-            closing_fee, net_proceeds = calculate_trade_costs(trade['invested_amount'], is_opening=False)
+            # Calculate closing size and fee
+            closing_size_usd = (trade['net_investment'] / trade['entry_price']) * close_price
+            closing_fee, _ = calculate_trade_costs(closing_size_usd, is_opening=False)
             
+            # Calculate profit/loss including fees
             if trade['action'] == "BUY":
                 gross_profit = (close_price - trade['entry_price']) / trade['entry_price'] * 100
                 gross_profit_usd = (close_price - trade['entry_price']) * (trade['net_investment'] / trade['entry_price'])
@@ -1396,7 +1401,7 @@ def close_trade():
             session['trade_history'][tool].append(closed_trade)
             
             # Return budget when trade is closed manually
-            update_budget(trade['invested_amount'], closing_fee, "return", gross_profit_usd=gross_profit_usd)
+            update_budget(trade['invested_amount'], closing_fee, "return", gross_profit_usd, net_investment=trade['net_investment'])
             
             del session['active_trades'][tool][trade_key]
             
@@ -1469,10 +1474,9 @@ def auto_refresh_status():
 def running_days():
     return jsonify({'running_days': get_running_days()})
     
-    
-    
 if not scheduler.running:
     scheduler.start()
+
 
 
 
